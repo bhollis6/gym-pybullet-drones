@@ -1,3 +1,6 @@
+vs_BuildTools
+MiniConda3
+
 > [!TIP]
 > For research work with **symbolic dynamics and constraints**, also try [`safe-control-gym`](https://github.com/utiasDSL/safe-control-gym)
 >
