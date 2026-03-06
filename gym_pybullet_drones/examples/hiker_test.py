@@ -29,21 +29,12 @@ obs, info = env.reset()
 #     current
 
 
-for i in range(100000, 1, -1):
+for i in range(0, 1000):
     # Depending on the version, obs might be a dictionary or a 2D array
     # We need the state vector for drone 0
     state = obs[0] if isinstance(obs, np.ndarray) else obs['0']
 
-    # 4. Define the Target Position (x, y, z)
-    
-    target_pos = np.array([0, 1, 3])
-
-
-    # # Circle
-    # target_pos = np.array([np.cos(i/500), np.sin(i/500), 1.0])
-
-    # Roll, pitch, yaw
-    target_rpy = np.array([3 / (i * 10), 3 / (i * 10), 3 / (i * 10)]) 
+    target_pos = np.array([3 * (i / 1000), 3 * (i / 1000), 15 * (i / 1000)]) 
 
     # 5. Calculate motor PWMs
     action[0, :], _, _ = ctrl.computeControlFromState(
