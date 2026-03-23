@@ -22,7 +22,7 @@ class Drone:
     DRONE_DISTANCE_PENALTY = 0.05
     DRONE_SPAWN_POINT = np.array([[0, 0, 2]])
     TOTAL_TREES = 20
-    
+    DRONE_FOV = 60
     def __init__(self):
 
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
@@ -121,10 +121,10 @@ class Drone:
         return mask
     
     def capture_picture(self, current_state):
-        drone_x, drone_y, drone_z = current_state[0:3]
+        x, y, z = current_state[0:3]
         
-        camera_eye = [drone_x, drone_y, drone_z] 
-        camera_target = [drone_x, drone_y, 0.0]
+        camera_eye = [x, y, z] 
+        camera_target = [x, y, 0.0]
         up_vector = [0, 1, 0]
         
         view_matrix = p.computeViewMatrix(cameraEyePosition=camera_eye, 
@@ -132,12 +132,12 @@ class Drone:
                                         cameraUpVector=up_vector)
         
         # Maybe shrink FOV it later?
-        projection_matrix = p.computeProjectionMatrixFOV(fov=60.0,
+        projection_matrix = p.computeProjectionMatrixFOV(fov=self.DRONE_FOV,
                                                         aspect=1.0, 
                                                         nearVal=0.1, 
                                                         farVal=100.0)
 
-        _, _, _, _, segmentation_mask = p.getCameraImage(
+        _, _, _, _, mask = p.getCameraImage(
             width=64, 
             height=64, 
             viewMatrix=view_matrix, 
@@ -145,7 +145,20 @@ class Drone:
             renderer=p.ER_BULLET_HARDWARE_OPENGL
         )
         
-        return segmentation_mask
+        captured_cells = self.get_captured_cells(x, y, z)
+
+        return mask, captured_cells
+
+    def get_captured_cells(self, x, y, z):
+        radius = z * math.tan(self.DRONE_FOV / 2)
+
+        max_x = min(self.GRID_SIZE - 1, math.ceil(x + radius))
+        min_x = max(0, math.floor(x - radius))
+        max_y = min(self.GRID_SIZE - 1, math.ceil(y + radius))
+        min_y = max(0, math.floor(y - radius))
+
+        return (min_x, max_x, min_y, max_y)
+
 
     def update_belief_not_seen(self, grid_x, grid_y):
         prior_probability = self.belief_map[grid_x, grid_y]
@@ -167,7 +180,7 @@ class Drone:
                     current_best_target = (i, j)
 
         return np.array([current_best_target[0], current_best_target[1], z])
-    
+        
     def run_simulation(self):
         CONFIDENCE_THRESHOLD = .90
 
@@ -181,7 +194,10 @@ class Drone:
             next_position = self.get_next_position(current_position)
 
             self.move(next_position)
-            mask = self.hover_and_capture_picture(0, 0, 3.0)
+
+            # captured cells = (min_x, max_x, min_y, max_y)
+            mask, captured_cells = self.hover_and_capture_picture(0, 0, 3.0)
+
             if self.hiker_id in mask:
                 # call update_belief_seen
             else:
