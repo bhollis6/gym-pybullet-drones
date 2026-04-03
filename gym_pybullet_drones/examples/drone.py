@@ -17,16 +17,16 @@ logging.basicConfig(
     )
 
 class Drone:
-    GRID_SIZE = 25
+    GRID_SIZE = 30
     # z, FALSE_NEGATIVE_RATE
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 500
-    DRONE_FOV = 90
-    SLOWING_FACTOR = 55
+    TOTAL_TREES = 750
+    DRONE_FOV = 45
+    SLOWING_FACTOR = 65
     Z_MAX = 20.0
-    Z_MIN = 3.0
-    K_AGGRESSION = 5.0
+    Z_MIN = 5
+    K_AGGRESSION = 100
     def __init__(self):
 
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
@@ -52,6 +52,11 @@ class Drone:
         hiker_id = p.loadURDF("sphere2.urdf", [hiker_x, hiker_y, 1], globalScaling=0.5)
         p.changeVisualShape(hiker_id, -1, rgbaColor=[1, 0, 0, 1])
 
+        logging.info(f"Hiker spawning at: ({hiker_x}, {hiker_y})")
+
+        # Create tree id
+        tree_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[0.5, 0.5, 0.75], rgbaColor=[0, 1, 0, 1])
+
         # Place trees
         current_trees = 0
         while current_trees < self.TOTAL_TREES:
@@ -63,8 +68,12 @@ class Drone:
             if (tree_x == hiker_x and tree_y == hiker_y):
                 continue
 
-            tree_id = p.loadURDF("cube_small.urdf", [tree_x, tree_y, tree_z], globalScaling=15)
-            p.changeVisualShape(tree_id, -1, rgbaColor=[0, 1, 0, 1])
+            p.createMultiBody(
+                baseMass = 0,
+                baseVisualShapeIndex=tree_id,
+                baseCollisionShapeIndex=-1,
+                basePosition=[tree_x, tree_y, tree_z]
+            )
             current_trees += 1
         # Return for camera logic
         return hiker_id
@@ -98,7 +107,12 @@ class Drone:
                 state=state,
                 target_pos=target_pos,
             )
-
+            p.resetDebugVisualizerCamera(
+                cameraDistance=10,
+                cameraYaw=0,
+                cameraPitch=-85.9,
+                cameraTargetPosition=[state[0], state[1], state[2]]
+            )
             # Step
             self.obs, _, _, _, self.info = self.env.step(action)
             
@@ -120,6 +134,12 @@ class Drone:
                 control_timestep=self.env.CTRL_TIMESTEP,
                 state=current_state , 
                 target_pos=target_pos,
+            )
+            p.resetDebugVisualizerCamera(
+                cameraDistance=10,
+                cameraYaw=0,
+                cameraPitch=-85.9,
+                cameraTargetPosition=[current_state[0], current_state[1], current_state[2]]
             )
 
             # Step 
