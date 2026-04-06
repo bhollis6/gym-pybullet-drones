@@ -21,9 +21,9 @@ class Drone:
     # z, FALSE_NEGATIVE_RATE
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 750
+    TOTAL_TREES = 350
     DRONE_FOV = 45
-    SLOWING_FACTOR = 65
+    SLOWING_FACTOR = 30
     Z_MAX = 20.0
     Z_MIN = 5
     K_AGGRESSION = 100
@@ -43,8 +43,24 @@ class Drone:
         self.hiker_id = self.place_trees_and_hiker()
     
     # Linear equation that passes thru 3, .05 and 20, .35
-    def calculate_false_negative_rate(self, z):
-        return 0.0176 * z -.0029
+    def calculate_false_negative_rate(self, x, y, z, i, j):
+        # z >= 15 Higher false negative
+        # z < 15 Lower false negative
+
+        distance = math.sqrt((y - j) ** 2 + (x - i) ** 2)
+
+        radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
+
+        factor = min(distance / radius, 1)
+
+        if z >= 15:
+            factor = factor * .20
+        if z < 15:
+            factor = factor * .5
+
+        logging.info(f'False Negative {factor}')
+        
+        return factor
 
     def place_trees_and_hiker(self):
         # Place hiker
@@ -89,10 +105,15 @@ class Drone:
         x, y, z = initial_state[0:3]
         x_prime, y_prime, z_prime = desired_stated[0:3]
 
-        distance = self.get_distance(x, y, z, x_prime, y_prime, z_prime)
 
-        end_range = math.floor(distance * self.SLOWING_FACTOR)
-        
+
+        distance = self.get_distance(x, y, z, x_prime, y_prime, z_prime)
+            # If drone is descending
+        if (z_prime - z < 0):
+            end_range = math.floor(distance * self.SLOWING_FACTOR * 2.5)
+        else:
+            end_range = math.floor(distance * self.SLOWING_FACTOR)
+
         for i in range(1, end_range + 1):
             state = self.obs[0] 
             progress = i / end_range
@@ -201,14 +222,14 @@ class Drone:
             min_x, max_x, min_y, max_y = captured_cells[0:4]
             return min_x <= i <= max_x and min_y <= j <= max_y
 
-        z = current_position[2]
+        x, y, z = current_position[0:3]
 
         for i in range(self.GRID_SIZE):
             for j in range(self.GRID_SIZE):
                 prior_probability = self.belief_map[i][j]
                 if hiker_seen:
                     if in_bounds(i, j):
-                        self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(z))
+                        self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(x, y, z, i, j))
                     # Hiker seen, not in bounds
                     else:
                         # Maybe add a false positive rate?
@@ -218,7 +239,7 @@ class Drone:
                 else:
                     if in_bounds(i, j):
                         # Might have missed the hiker
-                        self.belief_map[i][j] = prior_probability * self.calculate_false_negative_rate(z)
+                        self.belief_map[i][j] = prior_probability * self.calculate_false_negative_rate(x, y, z, i, j)
                     # Hiker not seen, not in_bounds
                     else:
                         # Normalization will make sure that these go up anyways
@@ -290,4 +311,3 @@ class Drone:
         flaten_hiker_index = self.belief_map.argmax()
         hiker_index = np.unravel_index(flaten_hiker_index, self.belief_map.shape)
         return hiker_index
-
