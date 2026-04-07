@@ -21,10 +21,10 @@ class Drone:
     # z, FALSE_NEGATIVE_RATE
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 350
+    TOTAL_TREES = 1200
     DRONE_FOV = 45
     SLOWING_FACTOR = 30
-    Z_MAX = 20.0
+    Z_MAX = 25.0
     Z_MIN = 5
     K_AGGRESSION = 100
     def __init__(self):
@@ -38,29 +38,26 @@ class Drone:
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.obs, self.info = self.env.reset()
 
-        # Divide ones by total grid size
+        # Normalized belief map
         self.belief_map = np.ones((self.GRID_SIZE, self.GRID_SIZE)) / (self.GRID_SIZE * self.GRID_SIZE)
         self.hiker_id = self.place_trees_and_hiker()
     
-    # Linear equation that passes thru 3, .05 and 20, .35
     def calculate_false_negative_rate(self, x, y, z, i, j):
         # z >= 15 Higher false negative
         # z < 15 Lower false negative
 
         distance = math.sqrt((y - j) ** 2 + (x - i) ** 2)
-
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
-        factor = min(distance / radius, 1)
+        # Maximum of 1
+        distance_from_drone = min(distance / radius, 1)
 
         if z >= 15:
-            factor = factor * .20
+            false_negative_rate = .20
         if z < 15:
-            factor = factor * .5
-
-        logging.info(f'False Negative {factor}')
+            false_negative_rate = .05
         
-        return factor
+        return distance_from_drone * false_negative_rate
 
     def place_trees_and_hiker(self):
         # Place hiker
@@ -99,21 +96,22 @@ class Drone:
 
 
     def move(self, desired_stated):
-        # First 3 of initial state are x, y, z
         initial_state = self.obs[0]
-
         x, y, z = initial_state[0:3]
         x_prime, y_prime, z_prime = desired_stated[0:3]
 
-
-
         distance = self.get_distance(x, y, z, x_prime, y_prime, z_prime)
-            # If drone is descending
+            
+        # If drone is descending, descender slower than normal. (PyBullet drone logic will crash drone on a fast descent.)
         if (z_prime - z < 0):
             end_range = math.floor(distance * self.SLOWING_FACTOR * 2.5)
+        # If drone is low altitude make it go slower.
+        elif (z < 6):
+            end_range = math.floor(distance * self.SLOWING_FACTOR * 1.5)
         else:
             end_range = math.floor(distance * self.SLOWING_FACTOR)
 
+        # Main movement loop
         for i in range(1, end_range + 1):
             state = self.obs[0] 
             progress = i / end_range
@@ -169,6 +167,7 @@ class Drone:
             # Render
             self.env.render()
 
+            # Capture the picture halfway through the hover
             if (i == (ticks // 2)):
                 mask = self.capture_picture(self.obs[0])
             
@@ -187,7 +186,6 @@ class Drone:
                                         cameraTargetPosition=camera_target, 
                                         cameraUpVector=up_vector)
         
-        # Maybe shrink FOV it later?
         projection_matrix = p.computeProjectionMatrixFOV(fov=self.DRONE_FOV,
                                                         aspect=1.0, 
                                                         nearVal=0.1, 
@@ -232,7 +230,6 @@ class Drone:
                         self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(x, y, z, i, j))
                     # Hiker seen, not in bounds
                     else:
-                        # Maybe add a false positive rate?
                         self.belief_map[i][j] = 0.0
                 
                 # Hiker not seen
@@ -267,22 +264,15 @@ class Drone:
                     best_next_position = (i, j)
                     best_utility = current_utility
 
-        # Had to use an shifted exp decay function. POMDP could not do this in real time.
-
-        
+        # Had to use an shifted exp decay function. POMDP could not do this in real time.     
         best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.GRID_SIZE * self.GRID_SIZE))))
-
-        # if np.max(self.belief_map) < 0.013: 
-        #     best_next_z = 6
-        # else:
-        #     best_next_z = 3
 
         logging.info(f"At {x} {y} {z}. Moving to {(best_next_position[0], best_next_position[1], best_next_z)}. Best belief map value {np.max(self.belief_map)}")
 
         return np.array([best_next_position[0], best_next_position[1], best_next_z])
         
     def run_simulation(self):
-        CONFIDENCE_THRESHOLD = .70
+        CONFIDENCE_THRESHOLD = .65
 
         while self.belief_map.max() < CONFIDENCE_THRESHOLD:
             current_position = self.obs[0]
@@ -310,4 +300,4 @@ class Drone:
 
         flaten_hiker_index = self.belief_map.argmax()
         hiker_index = np.unravel_index(flaten_hiker_index, self.belief_map.shape)
-        return hiker_index
+        return hiker_index.tolist()
