@@ -17,18 +17,18 @@ logging.basicConfig(
     )
 
 class Drone:
-    GRID_SIZE = 30
     # z, FALSE_NEGATIVE_RATE
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 1200
+    TOTAL_TREES = 600
     DRONE_FOV = 45
     SLOWING_FACTOR = 30
     Z_MAX = 25.0
     Z_MIN = 5
     K_AGGRESSION = 100
     def __init__(self):
-
+        self.grid_size_x = 30
+        self.grid_size_y = 30
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
                     num_drones=1, 
                     physics=Physics.PYB,
@@ -37,16 +37,17 @@ class Drone:
 
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.obs, self.info = self.env.reset()
-
+        self.y_offset = 0
+        self.x_offset = 0
         # Normalized belief map
-        self.belief_map = np.ones((self.GRID_SIZE, self.GRID_SIZE)) / (self.GRID_SIZE * self.GRID_SIZE)
+        self.belief_map = np.ones((self.grid_size_x, self.grid_size_y)) / (self.grid_size_x * self.grid_size_y)
         self.hiker_id = self.place_trees_and_hiker()
     
     def calculate_false_negative_rate(self, x, y, z, i, j):
         # z >= 15 Higher false negative
         # z < 15 Lower false negative
 
-        distance = math.sqrt((y - j) ** 2 + (x - i) ** 2)
+        distance = math.sqrt((y - i) ** 2 + (x - j) ** 2)
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
         # Maximum of 1
@@ -61,7 +62,7 @@ class Drone:
 
     def place_trees_and_hiker(self):
         # Place hiker
-        hiker_x, hiker_y = random.randint(0, self.GRID_SIZE - 1), random.randint(0, self.GRID_SIZE - 1)
+        hiker_x, hiker_y = random.randint(0, self.grid_size_x - 1), random.randint(0, self.grid_size_y - 1)
         hiker_id = p.loadURDF("sphere2.urdf", [hiker_x, hiker_y, 1], globalScaling=0.5)
         p.changeVisualShape(hiker_id, -1, rgbaColor=[1, 0, 0, 1])
 
@@ -73,8 +74,8 @@ class Drone:
         # Place trees
         current_trees = 0
         while current_trees < self.TOTAL_TREES:
-            tree_x = random.randint(0, self.GRID_SIZE - 1)
-            tree_y = random.randint(0, self.GRID_SIZE - 1)
+            tree_x = random.randint(0, self.grid_size_x - 1)
+            tree_y = random.randint(0, self.grid_size_y - 1)
             tree_z = random.randint(1, 2)
 
             # Tree cannot be on top of a hiker or on the drone's starting position
@@ -105,8 +106,8 @@ class Drone:
         # If drone is descending, descender slower than normal. (PyBullet drone logic will crash drone on a fast descent.)
         if (z_prime - z < 0):
             end_range = math.floor(distance * self.SLOWING_FACTOR * 2.5)
-        # If drone is low altitude make it go slower.
-        elif (z < 6):
+        # If drone is low altitude make it go a bit slower. (Prone to crashing at lower altitudes speeds)
+        elif (z < 7):
             end_range = math.floor(distance * self.SLOWING_FACTOR * 1.5)
         else:
             end_range = math.floor(distance * self.SLOWING_FACTOR)
@@ -206,9 +207,9 @@ class Drone:
     def get_captured_cells(self, x, y, z):
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
-        max_x = min(self.GRID_SIZE - 1, math.ceil(x + radius))
+        max_x = min(self.grid_size_x - 1, math.ceil(x + radius))
         min_x = max(0, math.floor(x - radius))
-        max_y = min(self.GRID_SIZE - 1, math.ceil(y + radius))
+        max_y = min(self.grid_size_y - 1, math.ceil(y + radius))
         min_y = max(0, math.floor(y - radius))
 
         return (min_x, max_x, min_y, max_y)
@@ -216,14 +217,14 @@ class Drone:
 
     def update_belief_map(self, current_position, captured_cells, hiker_seen):
         # (min_x, max_x, min_y, max_y)
+        min_x, max_x, min_y, max_y = captured_cells[0:4]
         def in_bounds(i, j):
-            min_x, max_x, min_y, max_y = captured_cells[0:4]
-            return min_x <= i <= max_x and min_y <= j <= max_y
+            return min_x <= j <= max_x and min_y <= i <= max_y
 
         x, y, z = current_position[0:3]
 
-        for i in range(self.GRID_SIZE):
-            for j in range(self.GRID_SIZE):
+        for i in range(self.grid_size_y):
+            for j in range(self.grid_size_x):
                 prior_probability = self.belief_map[i][j]
                 if hiker_seen:
                     if in_bounds(i, j):
@@ -241,6 +242,14 @@ class Drone:
                     else:
                         # Normalization will make sure that these go up anyways
                         continue
+        
+        # Shrink the grid
+        # if hiker_seen:
+        #     self.belief_map = self.belief_map[min_y:(max_y + 1), min_x:(max_x+1)]
+        #     self.grid_size_y = max_y - min_y
+        #     self.grid_size_x = max_x - min_x
+        #     self.y_offset = min_y
+        #     self.x_offset - min_x
 
         # Normalize and avoid a divide by zero.
         if np.sum(self.belief_map) > 0:
@@ -252,20 +261,23 @@ class Drone:
         best_utility = float('-inf')
         best_next_position = (0, 0)
 
-        for i in range(self.GRID_SIZE):
-            for j in range(self.GRID_SIZE):
+        for i in range(self.grid_size_y):
+            for j in range(self.grid_size_x):
                 current_utility = self.belief_map[i][j]
 
-                distance = math.sqrt((i - x)**2 + (j - y)**2)
+                # i += self.y_offset
+                # j += self.x_offset
+
+                distance = math.sqrt((j - x)**2 + (i - y)**2)
 
                 current_utility = current_utility - (distance * self.DRONE_DISTANCE_PENALTY)
 
                 if current_utility > best_utility:
-                    best_next_position = (i, j)
+                    best_next_position = (j, i)
                     best_utility = current_utility
 
         # Had to use an shifted exp decay function. POMDP could not do this in real time.     
-        best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.GRID_SIZE * self.GRID_SIZE))))
+        best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.grid_size_x * self.grid_size_y))))
 
         logging.info(f"At {x} {y} {z}. Moving to {(best_next_position[0], best_next_position[1], best_next_z)}. Best belief map value {np.max(self.belief_map)}")
 
