@@ -20,13 +20,14 @@ class Drone:
     # z, FALSE_NEGATIVE_RATE
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 600
+    TOTAL_TREES = 800
     DRONE_FOV = 45
     SLOWING_FACTOR = 30
     Z_MAX = 25.0
     Z_MIN = 5
     K_AGGRESSION = 100
     def __init__(self):
+        self.hiker_cells = set()
         self.grid_size_x = 30
         self.grid_size_y = 30
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
@@ -35,6 +36,10 @@ class Drone:
                     initial_xyzs= self.DRONE_SPAWN_POINT,
                     gui=True)
 
+        for i in range(self.grid_size_y):
+            for j in range(self.grid_size_x):
+                self.hiker_cells.add((i, j))
+
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.obs, self.info = self.env.reset()
         self.y_offset = 0
@@ -42,7 +47,6 @@ class Drone:
         # Normalized belief map
         self.belief_map = np.ones((self.grid_size_x, self.grid_size_y)) / (self.grid_size_x * self.grid_size_y)
         self.hiker_id = self.place_trees_and_hiker()
-    
     def calculate_false_negative_rate(self, x, y, z, i, j):
         # z >= 15 Higher false negative
         # z < 15 Lower false negative
@@ -51,7 +55,7 @@ class Drone:
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
         # Maximum of 1
-        distance_from_drone = min(distance / radius, 1)
+        distance_from_drone = max(0.01, min(distance / radius, 1))
 
         if z >= 15:
             false_negative_rate = .20
@@ -226,30 +230,25 @@ class Drone:
         for i in range(self.grid_size_y):
             for j in range(self.grid_size_x):
                 prior_probability = self.belief_map[i][j]
-                if hiker_seen:
-                    if in_bounds(i, j):
-                        self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(x, y, z, i, j))
-                    # Hiker seen, not in bounds
+                if (i, j) in self.hiker_cells:
+                    if hiker_seen:
+                        if in_bounds(i, j):
+                            self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(x, y, z, i, j))
+                            self.hiker_cells.add((i, j))
+                        # Hiker seen, not in bounds
+                        else:
+                            self.hiker_cells.remove((i, j))
+                            self.belief_map[i][j] = 0.0
+                    
+                    # Hiker not seen
                     else:
-                        self.belief_map[i][j] = 0.0
-                
-                # Hiker not seen
-                else:
-                    if in_bounds(i, j):
-                        # Might have missed the hiker
-                        self.belief_map[i][j] = prior_probability * self.calculate_false_negative_rate(x, y, z, i, j)
-                    # Hiker not seen, not in_bounds
-                    else:
-                        # Normalization will make sure that these go up anyways
-                        continue
-        
-        # Shrink the grid
-        # if hiker_seen:
-        #     self.belief_map = self.belief_map[min_y:(max_y + 1), min_x:(max_x+1)]
-        #     self.grid_size_y = max_y - min_y
-        #     self.grid_size_x = max_x - min_x
-        #     self.y_offset = min_y
-        #     self.x_offset - min_x
+                        if in_bounds(i, j):
+                            # Might have missed the hiker
+                            self.belief_map[i][j] = prior_probability * self.calculate_false_negative_rate(x, y, z, i, j)
+                        # Hiker not seen, not in_bounds
+                        else:
+                            # Normalization will make sure that these go up anyways
+                            continue
 
         # Normalize and avoid a divide by zero.
         if np.sum(self.belief_map) > 0:
@@ -263,18 +262,16 @@ class Drone:
 
         for i in range(self.grid_size_y):
             for j in range(self.grid_size_x):
-                current_utility = self.belief_map[i][j]
+                if (i, j) in self.hiker_cells:     
+                    current_utility = self.belief_map[i][j]
 
-                # i += self.y_offset
-                # j += self.x_offset
+                    distance = math.sqrt((j - x)**2 + (i - y)**2)
 
-                distance = math.sqrt((j - x)**2 + (i - y)**2)
+                    current_utility = current_utility - (distance * self.DRONE_DISTANCE_PENALTY)
 
-                current_utility = current_utility - (distance * self.DRONE_DISTANCE_PENALTY)
-
-                if current_utility > best_utility:
-                    best_next_position = (j, i)
-                    best_utility = current_utility
+                    if current_utility > best_utility:
+                        best_next_position = (j, i)
+                        best_utility = current_utility
 
         # Had to use an shifted exp decay function. POMDP could not do this in real time.     
         best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.grid_size_x * self.grid_size_y))))
