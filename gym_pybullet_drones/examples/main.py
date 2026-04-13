@@ -8,7 +8,7 @@ def main():
     drone.env.close()
 
     if hiker_located:
-        print("Hiker located at", hiker_located)
+        print("Hiker located")
     else:
         print("Could not located hiker")
 

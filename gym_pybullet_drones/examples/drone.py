@@ -18,16 +18,19 @@ logging.basicConfig(
 
 class Drone:
     TOTAL_TREES = 800
-
+    SEED = 5
+    random.seed(SEED)
     DRONE_DISTANCE_PENALTY = 0.0001
-    DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
+    DRONE_SPAWN_POINT = np.array([[0, 0, 15]])
     DRONE_FOV = 45
     
-    SLOWING_FACTOR = 30
+    SLOWING_FACTOR = 40
     Z_MAX = 25.0
-    Z_MIN = 5
-    K_AGGRESSION = 100
+    Z_MIN = 5.0
+    K_AGGRESSION = 75
     def __init__(self):
+        # Scanning, Sweep
+        self.mode = "SCANNING"
         self.hiker_cells = set()
         self.grid_size_x = 30
         self.grid_size_y = 30
@@ -108,12 +111,10 @@ class Drone:
 
         distance = self.get_distance(x, y, z, x_prime, y_prime, z_prime)
             
-        # If drone is descending, descender slower than normal. (PyBullet drone logic will crash drone on a fast descent.)
-        if (z_prime - z < 0):
+        # If drone is descending more than 3 units, descent slower.. (PyBullet drone logic will crash drone on a fast descent.)
+        if (abs(z_prime - z) > 3):
             end_range = math.floor(distance * self.SLOWING_FACTOR * 2.5)
         # If drone is low altitude make it go a bit slower. (Prone to crashing at lower altitudes speeds)
-        elif (z < 7):
-            end_range = math.floor(distance * self.SLOWING_FACTOR * 1.5)
         else:
             end_range = math.floor(distance * self.SLOWING_FACTOR)
 
@@ -133,7 +134,7 @@ class Drone:
                 target_pos=target_pos,
             )
             p.resetDebugVisualizerCamera(
-                cameraDistance=10,
+                cameraDistance=3,
                 cameraYaw=0,
                 cameraPitch=-85.9,
                 cameraTargetPosition=[state[0], state[1], state[2]]
@@ -146,7 +147,7 @@ class Drone:
             time.sleep(self.env.CTRL_TIMESTEP)
 
 
-    def hover_and_capture_picture(self, initial_state, ticks = 350):
+    def hover_and_capture_picture(self, initial_state, ticks = 500):
         mask = None
         x_prime, y_prime, z_prime = initial_state[0:3]
 
@@ -163,7 +164,7 @@ class Drone:
                 target_pos=target_pos,
             )
             p.resetDebugVisualizerCamera(
-                cameraDistance=10,
+                cameraDistance=3,
                 cameraYaw=0,
                 cameraPitch=-85.9,
                 cameraTargetPosition=[x, y, z]
@@ -175,8 +176,8 @@ class Drone:
             # Render
             self.env.render()
 
-            # Capture the picture halfway through the hover
-            if (i == (ticks // 2)):
+            # Capture the picture at the final point in the hover
+            if (i == (ticks - 1)):
                 mask = self.capture_picture(self.obs[0])
             
             time.sleep(self.env.CTRL_TIMESTEP)
@@ -213,6 +214,9 @@ class Drone:
 
     def get_captured_cells(self, x, y, z):
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
+
+        #want a radius of .5
+        #drone_fov = 2 * math.degrees(math.atan(radius / z))
 
         max_x = min(self.grid_size_x - 1, math.ceil(x + radius))
         min_x = max(0, math.floor(x - radius))
@@ -259,24 +263,34 @@ class Drone:
     def get_next_position(self, current_state):
         x, y, z = current_state[0:3]
 
-        best_utility = float('-inf')
-        best_next_position = (0, 0)
+        if self.mode == "SCANNING":
+            best_utility = float('-inf')
+            best_next_position = (0, 0)
 
-        for i in range(self.grid_size_y):
-            for j in range(self.grid_size_x):
-                if (i, j) in self.hiker_cells:     
-                    current_utility = self.belief_map[i][j]
+            for i in range(self.grid_size_y):
+                for j in range(self.grid_size_x):
+                    if (i, j) in self.hiker_cells:     
+                        current_utility = self.belief_map[i][j]
 
-                    distance = math.sqrt((j - x)**2 + (i - y)**2)
+                        distance = math.sqrt((j - x)**2 + (i - y)**2)
 
-                    current_utility = current_utility - (distance * self.DRONE_DISTANCE_PENALTY)
+                        current_utility = current_utility - (distance * self.DRONE_DISTANCE_PENALTY)
 
-                    if current_utility > best_utility:
-                        best_next_position = (j, i)
-                        best_utility = current_utility
+                        if current_utility > best_utility:
+                            best_next_position = (j, i)
+                            best_utility = current_utility
+            best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.grid_size_x * self.grid_size_y))))
+        else:
+            # Maintain Z
+            # Increase distance penality or scan 1 by 1 
+            # Pop if not seen
+            # Reduce FOV (radius of 0.5)
+            # Reduce FNR
+            best_next_z = 5
+
+
 
         # Had to use an shifted exp decay function. POMDP could not do this in real time.     
-        best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.grid_size_x * self.grid_size_y))))
 
         logging.info(f"At {x} {y} {z}. Moving to {(best_next_position[0], best_next_position[1], best_next_z)}. Best belief map value {np.max(self.belief_map)}")
 
@@ -286,35 +300,35 @@ class Drone:
 
         previous_position = np.empty(3,)
         repeated_position_count = 0
-        while repeated_position_count < 5:
+        while repeated_position_count < 3:
             current_position = self.obs[0]
             logging.info(f"At {(current_position[0:3])}")
 
             next_position = self.get_next_position(current_position)
-            if np.array_equal(previous_position, next_position):
+            temp = np.round(next_position.copy())
+
+            if np.allclose(previous_position, temp):
                 repeated_position_count += 1
             else:
                 repeated_position_count = 0
-                previous_position = next_position
+                # Round in order to hit the threshold.
+                previous_position = temp
+                logging.info(f"{previous_position}, {temp}")
             self.move(next_position)
             logging.info(f"Moving to {(next_position[0:3])}")
 
             mask, captured_cells = self.hover_and_capture_picture(next_position)
             
+            #when at a mimimum z value it should get three chances to find the hiker before entering sweep mode
 
             if self.hiker_id in mask:
                 hiker_seen = True
-                logging.info(f"Hiker found in cells {captured_cells}")
+                logging.info(f"FOUND in cells {captured_cells}")
             else:
                 hiker_seen = False
-                logging.info(f"Hiker NOT found in cells {captured_cells}")
+                logging.info(f"MISSING in cells {captured_cells}")
             
             self.update_belief_map(next_position, captured_cells, hiker_seen)
+            # logging.info(np.round(self.belief_map.copy(), decimals=4))
 
-        # Drone has remained in same position hovering around the hiker. It has found the hiker.
-        logging.info(f"Hiker located at {flaten_hiker_index}")
-
-
-        flaten_hiker_index = self.belief_map.argmax()
-        hiker_index = np.unravel_index(flaten_hiker_index, self.belief_map.shape)
-        return hiker_index.tolist()
+        return True
