@@ -17,11 +17,12 @@ logging.basicConfig(
     )
 
 class Drone:
-    # z, FALSE_NEGATIVE_RATE
+    TOTAL_TREES = 800
+
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 3]])
-    TOTAL_TREES = 800
     DRONE_FOV = 45
+    
     SLOWING_FACTOR = 30
     Z_MAX = 25.0
     Z_MIN = 5
@@ -48,15 +49,16 @@ class Drone:
         self.belief_map = np.ones((self.grid_size_x, self.grid_size_y)) / (self.grid_size_x * self.grid_size_y)
         self.hiker_id = self.place_trees_and_hiker()
     def calculate_false_negative_rate(self, x, y, z, i, j):
-        # z >= 15 Higher false negative
-        # z < 15 Lower false negative
+
 
         distance = math.sqrt((y - i) ** 2 + (x - j) ** 2)
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
-        # Maximum of 1
-        distance_from_drone = max(0.01, min(distance / radius, 1))
+        # Cap it at from 0.2 to 1
+        distance_from_drone = max(0.2, min(distance / radius, 1))
 
+        # z >= 15 Higher false negative
+        # z < 15 Lower false negative
         if z >= 15:
             false_negative_rate = .20
         if z < 15:
@@ -98,7 +100,6 @@ class Drone:
 
     def get_distance(self, x, y, z, x_prime, y_prime, z_prime):
         return math.sqrt(((x_prime) - x)**2 + ((y_prime) - y)**2 + ((z_prime) - z)**2)
-
 
     def move(self, desired_stated):
         initial_state = self.obs[0]
@@ -147,11 +148,13 @@ class Drone:
 
     def hover_and_capture_picture(self, initial_state, ticks = 350):
         mask = None
-        x, y, z = initial_state[0:3]
+        x_prime, y_prime, z_prime = initial_state[0:3]
 
         for i in range(ticks):
             current_state = self.obs[0]
-            target_pos = np.array([x, y, z])
+            x, y, z = current_state[0:3]
+
+            target_pos = np.array([x_prime, y_prime, z_prime])
 
             action = np.zeros((1, 4))
             action[0, :], _, _ = self.ctrl.computeControlFromState(
@@ -163,7 +166,7 @@ class Drone:
                 cameraDistance=10,
                 cameraYaw=0,
                 cameraPitch=-85.9,
-                cameraTargetPosition=[current_state[0], current_state[1], current_state[2]]
+                cameraTargetPosition=[x, y, z]
             )
 
             # Step 
@@ -220,7 +223,6 @@ class Drone:
 
 
     def update_belief_map(self, current_position, captured_cells, hiker_seen):
-        # (min_x, max_x, min_y, max_y)
         min_x, max_x, min_y, max_y = captured_cells[0:4]
         def in_bounds(i, j):
             return min_x <= j <= max_x and min_y <= i <= max_y
@@ -281,13 +283,19 @@ class Drone:
         return np.array([best_next_position[0], best_next_position[1], best_next_z])
         
     def run_simulation(self):
-        CONFIDENCE_THRESHOLD = .65
 
-        while self.belief_map.max() < CONFIDENCE_THRESHOLD:
+        previous_position = np.empty(3,)
+        repeated_position_count = 0
+        while repeated_position_count < 5:
             current_position = self.obs[0]
             logging.info(f"At {(current_position[0:3])}")
 
             next_position = self.get_next_position(current_position)
+            if np.array_equal(previous_position, next_position):
+                repeated_position_count += 1
+            else:
+                repeated_position_count = 0
+                previous_position = next_position
             self.move(next_position)
             logging.info(f"Moving to {(next_position[0:3])}")
 
@@ -303,8 +311,8 @@ class Drone:
             
             self.update_belief_map(next_position, captured_cells, hiker_seen)
 
-        # Confidence < Threshold, return hiker index
-        logging.info("Confidence Threshold reached. Hiker located")
+        # Drone has remained in same position hovering around the hiker. It has found the hiker.
+        logging.info(f"Hiker located at {flaten_hiker_index}")
 
 
         flaten_hiker_index = self.belief_map.argmax()
