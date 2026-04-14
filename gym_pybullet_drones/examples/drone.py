@@ -23,8 +23,9 @@ class Drone:
     random.seed(SEED)
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 5]])
-    DRONE_FOV = 45
-    
+    # DRONE_FOV = 45
+    # FOV For when z = 5 and radius = 0.5
+    DRONE_FOV = 20
     SLOWING_FACTOR = 50
     Z_MAX = 25.0
     Z_MIN = 5.0
@@ -310,39 +311,67 @@ class Drone:
             max_y = max(max_y, y)
 
         logging.info(f"{min_x}, {max_x}, {min_y}, {max_y}")
-        # Want to scan the row / column with the maximum length
-        # i.e 3x8 grid, want to scan the 8 long rows instead of the 3 long columns.
+        
 
         # min = 0 max = 4
 
-        # Row by row sweeping logic
 
         x = min_x
         y = min_y
         z = 5
         reverse = False
-        while y <= max_y:
-            for i in range(max_x - min_x + 1):
-                # may be able to omit
-                mask, _ = self.hover_and_capture_picture([x, y, z], 125)
-                
-                if self.hiker_id in mask:
-                    logging.info(f"FOUND in cells {x, y}")
-                    return True
 
-                if not reverse:
-                        x += 1
-                else:
-                        x -= 1
-                
-                if i == (max_x - min_x):
-                    y += 1
+        # Want to scan the row / column with the maximum length
+        # i.e 3x8 grid, want to scan the 8 long rows instead of the 3 long columns.
+
+        # if ((max_x - min_x) >= (max_y - min_y)):
+        if (False):
+            # Row by row sweeping logic
+            while y <= max_y:
+                for i in range(max_x - min_x + 1):
+                    # may be able to omit
+                    mask, _ = self.hover_and_capture_picture([x, y, z], 125)
+                    
+                    if self.hiker_id in mask:
+                        logging.info(f"FOUND in cells {x, y}")
+                        return True
+
                     if not reverse:
-                        x -= 1
+                            x += 1
                     else:
+                            x -= 1
+                    
+                    if i == (max_x - min_x):
+                        y += 1
+                        if not reverse:
+                            x -= 1
+                        else:
+                            x += 1
+                    
+                        reverse = not reverse
+        else:
+            while x <= max_x:
+                for i in range(max_y - min_y + 1):
+                    # may be able to omit
+                    mask, _ = self.hover_and_capture_picture([x, y, z], 125)
+                    logging.info(f"{x, y}")
+                    if self.hiker_id in mask:
+                        logging.info(f"FOUND in cells {x, y}")
+                        return True
+
+                    if not reverse:
+                            y += 1
+                    else:
+                            y -= 1
+                    
+                    if i == (max_y - min_y):
                         x += 1
-                
-                    reverse = not reverse
+                        if not reverse:
+                            y -= 1
+                        else:
+                            y += 1
+                    
+                        reverse = not reverse
 
 
     def run_simulation(self):
