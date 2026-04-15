@@ -7,7 +7,6 @@ import pybullet as p
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
-
 import logging
 logging.basicConfig(
         level=logging.INFO,
@@ -17,28 +16,22 @@ logging.basicConfig(
     )
 
 class Drone:
-
-    # Find hiker
-    # Find quickly
-    # Find in minimum distance
-
-    TOTAL_TREES = 1
-    # 5, 6
-    SEED = 6
-    random.seed(SEED)
+    TOTAL_TREES = 800
+    # 5, 6 challenging
+    SEED = 1
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 15]])
-    # FOV For when z = 5 and radius = 0.5
     SLOWING_FACTOR = 50
-    Z_MAX = 25.0
-    Z_MIN = 5.0
+    GRID_SIZE = 30
+    DRONE_FOV = 45
+    MAX_Z = 25.0
+    MIN_Z = 5.0
     K_AGGRESSION = 80
+    HIKER_MISS_LIMIT = 4
+
     def __init__(self):
-        # SCANNING, SWEEPING
-        self.mode = "SCANNING"
+        random.seed(self.SEED)
         self.hiker_cells = set()
-        self.DRONE_FOV = 45
-        self.GRID_SIZE = 9
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
                     num_drones=1, 
                     physics=Physics.PYB,
@@ -55,17 +48,19 @@ class Drone:
         # Normalized belief map
         self.belief_map = np.ones((self.GRID_SIZE, self.GRID_SIZE)) / (self.GRID_SIZE * self.GRID_SIZE)
         self.hiker_id = self.place_trees_and_hiker()
+    
+    
     def calculate_false_negative_rate(self, x, y, z, i, j):
-
-
         distance = math.sqrt((y - i) ** 2 + (x - j) ** 2)
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
 
         # Cap it at from 0.2 to 1
         distance_from_drone = max(0.2, min(distance / radius, 1))
 
-        # z >= 15 Higher false negative
-        # z < 15 Lower false negative
+        # z: [25, 15] - Med FNR
+        # z: [14, 6] - Low FNR
+        # z: [5]: - Extremlely low FNR
+
         if z >= 15:
             false_negative_rate = .20
         elif z >= 6:
@@ -73,21 +68,18 @@ class Drone:
         else:
             # Scanning, extremely low FNR
             false_negative_rate = .01
-            
-
         
         return distance_from_drone * false_negative_rate
 
     def place_trees_and_hiker(self):
+        # Create hiker and tree id's
+        tree_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[0.5, 0.5, 0.75], rgbaColor=[0, 1, 0, 1])
+        hiker_id = p.loadURDF("sphere2.urdf", [hiker_x, hiker_y, 1], globalScaling=0.5)
+
         # Place hiker
         hiker_x, hiker_y = random.randint(0, self.GRID_SIZE - 1), random.randint(0, self.GRID_SIZE - 1)
-        hiker_id = p.loadURDF("sphere2.urdf", [hiker_x, hiker_y, 1], globalScaling=0.5)
         p.changeVisualShape(hiker_id, -1, rgbaColor=[1, 0, 0, 1])
-
         logging.info(f"Hiker spawning at: ({hiker_x}, {hiker_y})")
-
-        # Create tree id
-        tree_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[0.5, 0.5, 0.75], rgbaColor=[0, 1, 0, 1])
 
         # Place trees
         current_trees = 0
@@ -96,7 +88,7 @@ class Drone:
             tree_y = random.randint(0, self.GRID_SIZE - 1)
             tree_z = random.randint(1, 2)
 
-            # Tree cannot be on top of a hiker or on the drone's starting position
+            # Tree cannot be on top of a hiker
             if (tree_x == hiker_x and tree_y == hiker_y):
                 continue
 
@@ -272,7 +264,6 @@ class Drone:
     def get_next_position(self, current_state):
         x, y, z = current_state[0:3]
 
-        # if self.mode == "SCANNING":
         best_utility = float('-inf')
         best_next_position = (0, 0)
 
@@ -288,11 +279,9 @@ class Drone:
                     if current_utility > best_utility:
                         best_next_position = (j, i)
                         best_utility = current_utility
-        best_next_z = self.Z_MIN + (self.Z_MAX - self.Z_MIN) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.GRID_SIZE * self.GRID_SIZE))))       
-
-
         # Had to use an shifted exp decay function. POMDP could not do this in real time.     
-
+        best_next_z = self.MIN_Z + (self.MAX_Z - self.MIN_Z) * math.exp((-self.K_AGGRESSION) * (np.max(self.belief_map) - (1.0 / (self.GRID_SIZE * self.GRID_SIZE))))       
+        
         logging.info(f"At {x} {y} {z}. Moving to {(best_next_position[0], best_next_position[1], best_next_z)}. Best belief map value {np.max(self.belief_map)}")
 
         return np.array([best_next_position[0], best_next_position[1], best_next_z])
@@ -300,24 +289,15 @@ class Drone:
     # Called to prevent thrashing
     def sweep(self):
 
-        min_x = float('inf')
-        max_x = float('-inf')
-        
-        min_y = float('inf')
-        max_y = float('-inf')
+        min_x, max_x = float('inf'), float('-inf')
+        min_y, max_y = float('inf'), float('-inf')
 
         # Find scanning grid
 
         for y, x in self.hiker_cells:
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
+            min_x, max_x = min(min_x, x), max(max_x, x)
 
-            min_y = min(min_y, y)
-            max_y = max(max_y, y)
-
-        logging.info(f"{min_x}, {max_x}, {min_y}, {max_y}")
-        
-        # shrinkage to fit the double scan
+            min_y, max_y = min(min_y, y), max(max_y, y)
         
         # Expand for odd grid sizing
         if ((max_x - min_x) % 2) == 0:
@@ -325,44 +305,40 @@ class Drone:
 
         if ((max_y - min_y) % 2) == 0:
             max_y += 1
-       
 
+        logging.info(f"WINDOW (mix_x, max_x, min_y, max_y): {min_x}, {max_x}, {min_y}, {max_y}")
+        
         x = min_x + 1
         y = min_y + 0.5
-        z = 5
 
-        self.move([x, y, z])
+        self.move([x, y, self.MIN_Z])
         reverse = False
 
         # Want to scan the row / column with the maximum length
-        # i.e 3x8 grid, want to scan the 8 long rows instead of the 3 long columns
-    
+        # i.e 3x8 grid, want to scan the 3 long rows instead of the 8 short columns
         if ((max_x - min_x) >= (max_y - min_y)):
             # Row by row sweeping logic
             while y <= max_y:
                 for i in range((max_x - min_x)):
                     # may be able to omit
                     
-                    mask, _ = self.hover_and_capture_picture([x, y, z], 125)
+                    mask, _ = self.hover_and_capture_picture([x, y, self.MIN_Z], 125)
 
-                    logging.info(f"moving to {x, y, z}")
+                    logging.info(f"moving to {x, y, self.MIN_Z}")
                     if self.hiker_id in mask:
-                        logging.info(f"FOUND in cells {x, y}")
                         return True
 
                     if not reverse:
                             x += 1
                     else:
                             x -= 1
-                    logging.info(f"i: {i}")
                     if i == ((max_x - min_x - 1)):
-                        logging.info("Reverse")
                         y += 2
                         if not reverse:
                             x -= 1
                         else:
                             x += 1
-                        self.move([x, y, z])
+                        self.move([x, y, self.MIN_Z])
                     
                         reverse = not reverse
         else:
@@ -371,11 +347,10 @@ class Drone:
                 for i in range((max_y - min_y)):
                     # may be able to omit
                     
-                    mask, _ = self.hover_and_capture_picture([x, y, z], 125)
+                    mask, _ = self.hover_and_capture_picture([x, y, self.MIN_Z], 125)
 
-                    logging.info(f"moving to {x, y, z}")
+                    logging.info(f"moving to {x, y, self.MIN_Z}")
                     if self.hiker_id in mask:
-                        logging.info(f"FOUND in cells {x, y}")
                         return True
 
                     if not reverse:
@@ -384,67 +359,60 @@ class Drone:
                             y -= 1
                     logging.info(f"i: {i}")
                     if i == ((max_y - min_y - 1)):
-                        logging.info("Reverse")
                         x += 2
                         if not reverse:
                             y -= 1
                         else:
                             y += 1
-                        self.move([x, y, z])
+                        self.move([x, y, self.MIN_Z])
                     
                         reverse = not reverse
 
+    # def scan(self, current_position):
+
     def run_simulation(self):
-        hiker_has_been_seen = False
+        hiker_seen = False
+        hiker_ever_seen = False
         hiker_miss_count = 0
-        previous_position = np.empty(3,)
-        repeated_position_count = 0
+        mode = "SCANNING"
+
         start = time.perf_counter()
+        while True:
+            # HIKER_MISS_LIMIT tries to find the hiker before entering sweep mode
+            if hiker_miss_count >= self.HIKER_MISS_LIMIT:
+                mode = "SWEEPING"
 
-        while repeated_position_count < 3:
-            # Five tries to find the hiker before entering sweep mode
-
-            if hiker_miss_count >= 4:
-                self.mode = "SWEEPING"
             current_position = self.obs[0]
             logging.info(f"At {(current_position[0:3])}")
 
-            next_position = self.get_next_position(current_position)
-            temp = np.round(next_position.copy())
-
-            if np.allclose(previous_position, temp):
-                repeated_position_count += 1
-            else:
-                repeated_position_count = 0
-                # Round in order to hit the threshold.
-                previous_position = temp
-                logging.info(f"{previous_position}, {temp}")
-
-            if self.mode == "SCANNING":
+            if mode == "SCANNING":
+                # Scan function
+                next_position = self.get_next_position(current_position)
                 self.move(next_position)
                 logging.info(f"Moving to {(next_position[0:3])}")
 
                 mask, captured_cells = self.hover_and_capture_picture(next_position)
                 
                 if self.hiker_id in mask:
+                    if math.floor(current_position[2]) == 5:
+                        break
                     hiker_seen = True
-                    hiker_has_been_seen = True
+                    hiker_ever_seen = True
                     hiker_miss_count = 0
                     logging.info(f"FOUND in cells {captured_cells}")
                 else:
                     hiker_seen = False
-                    if hiker_has_been_seen:
+                    
+                    if hiker_ever_seen:
                         hiker_miss_count += 1
                     logging.info(f"MISSING in cells {captured_cells}")
                 
                 self.update_belief_map(next_position, captured_cells, hiker_seen)
             else:
-                self.sweep()
-                endtime = time.perf_counter()
-                logging.info(f"Found in {endtime - start:.6f} seconds")
-                return True
+                if self.sweep():
+                    break
 
             endtime = time.perf_counter()
-            logging.info(f"Found in {endtime - start:.6f} seconds")
+            logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
 
         return True
