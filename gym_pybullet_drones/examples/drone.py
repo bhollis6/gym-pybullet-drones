@@ -31,24 +31,18 @@ class Drone:
 
     def __init__(self):
         random.seed(self.SEED)
-        self.hiker_cells = set()
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
                     num_drones=1, 
                     physics=Physics.PYB,
                     initial_xyzs= self.DRONE_SPAWN_POINT,
                     gui=True)
-
-        for i in range(self.GRID_SIZE):
-            for j in range(self.GRID_SIZE):
-                self.hiker_cells.add((i, j))
-
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.obs, self.info = self.env.reset()
         
         # Normalized belief map
         self.belief_map = np.ones((self.GRID_SIZE, self.GRID_SIZE)) / (self.GRID_SIZE * self.GRID_SIZE)
-        self.hiker_id = self.place_trees_and_hiker()
-    
+        self.hiker_cells = self.populate_hiker_cells()
+        self.hiker_id = self.place_trees_and_hiker()    
     
     def calculate_false_negative_rate(self, x, y, z, i, j):
         distance = math.sqrt((y - i) ** 2 + (x - j) ** 2)
@@ -71,13 +65,20 @@ class Drone:
         
         return distance_from_drone * false_negative_rate
 
+    def populate_hiker_cells(self):
+        hiker_cells = set()
+        for i in range(self.GRID_SIZE):
+            for j in range(self.GRID_SIZE):
+                hiker_cells.add((i, j))
+        return hiker_cells
+
     def place_trees_and_hiker(self):
         # Create hiker and tree id's
         tree_id = p.createVisualShape(shapeType=p.GEOM_BOX, halfExtents=[0.5, 0.5, 0.75], rgbaColor=[0, 1, 0, 1])
+        hiker_x, hiker_y = random.randint(0, self.GRID_SIZE - 1), random.randint(0, self.GRID_SIZE - 1)
         hiker_id = p.loadURDF("sphere2.urdf", [hiker_x, hiker_y, 1], globalScaling=0.5)
 
         # Place hiker
-        hiker_x, hiker_y = random.randint(0, self.GRID_SIZE - 1), random.randint(0, self.GRID_SIZE - 1)
         p.changeVisualShape(hiker_id, -1, rgbaColor=[1, 0, 0, 1])
         logging.info(f"Hiker spawning at: ({hiker_x}, {hiker_y})")
 
@@ -319,9 +320,7 @@ class Drone:
         if ((max_x - min_x) >= (max_y - min_y)):
             # Row by row sweeping logic
             while y <= max_y:
-                for i in range((max_x - min_x)):
-                    # may be able to omit
-                    
+                for i in range((max_x - min_x)):                    
                     mask, _ = self.hover_and_capture_picture([x, y, self.MIN_Z], 125)
 
                     logging.info(f"moving to {x, y, self.MIN_Z}")
@@ -414,5 +413,8 @@ class Drone:
 
             endtime = time.perf_counter()
             logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
+
+        # Victory hover
+        self.hover_and_capture_picture(self.obs[0], 700)
 
         return True
