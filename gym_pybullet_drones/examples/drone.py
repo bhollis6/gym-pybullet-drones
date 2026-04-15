@@ -18,7 +18,7 @@ logging.basicConfig(
 class Drone:
     TOTAL_TREES = 800
     # 5, 6 challenging
-    SEED = 6
+    SEED = 0
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 15]])
     SLOWING_FACTOR = 50
@@ -415,9 +415,10 @@ class Drone:
                 if self.sweep():
                     break
 
-            endtime = time.perf_counter()
-            logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
-            logging.info(f"Drone total distance: {self.total_distance} units")
+        endtime = time.perf_counter()
+        logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
+        logging.info(f"Drone total distance: {self.total_distance} units")
+        
         # Victory hover
         self.hover_and_capture_picture(self.obs[0], 700)
 
