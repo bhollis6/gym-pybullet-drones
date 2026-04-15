@@ -4,6 +4,7 @@ from drone import Drone
 def main():
     drone = Drone()
 
+    
     hiker_located = drone.run_simulation()
     drone.env.close()
 
