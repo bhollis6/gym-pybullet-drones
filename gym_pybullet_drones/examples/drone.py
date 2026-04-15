@@ -18,7 +18,7 @@ logging.basicConfig(
 class Drone:
     TOTAL_TREES = 800
     # 5, 6 challenging
-    SEED = 1
+    SEED = 6
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 15]])
     SLOWING_FACTOR = 50
@@ -38,11 +38,12 @@ class Drone:
                     gui=True)
         self.ctrl = DSLPIDControl(drone_model=DroneModel.CF2X)
         self.obs, self.info = self.env.reset()
-        
+        self.total_distance = 0
+
         # Normalized belief map
         self.belief_map = np.ones((self.GRID_SIZE, self.GRID_SIZE)) / (self.GRID_SIZE * self.GRID_SIZE)
         self.hiker_cells = self.populate_hiker_cells()
-        self.hiker_id = self.place_trees_and_hiker()    
+        self.hiker_id = self.place_trees_and_hiker()
     
     def calculate_false_negative_rate(self, x, y, z, i, j):
         distance = math.sqrt((y - i) ** 2 + (x - j) ** 2)
@@ -103,7 +104,9 @@ class Drone:
         # Return for camera logic
         return hiker_id
 
-    def get_distance(self, x, y, z, x_prime, y_prime, z_prime):
+    def get_distance(self, initial_state, desired_state):
+        x, y, z = initial_state[0:3]
+        x_prime, y_prime, z_prime = desired_state[0:3]
         return math.sqrt(((x_prime) - x)**2 + ((y_prime) - y)**2 + ((z_prime) - z)**2)
 
     def move(self, desired_stated):
@@ -111,8 +114,10 @@ class Drone:
         x, y, z = initial_state[0:3]
         x_prime, y_prime, z_prime = desired_stated[0:3]
 
-        distance = self.get_distance(x, y, z, x_prime, y_prime, z_prime)
-            
+        distance = self.get_distance(initial_state, desired_stated)
+        
+        self.total_distance += distance
+
         # If drone is descending more than 3 units, descent slower.. (PyBullet drone logic will crash drone on a fast descent.)
         if (abs(z_prime - z) > 3):
             end_range = math.floor(distance * self.SLOWING_FACTOR * 1.5)
@@ -149,9 +154,9 @@ class Drone:
             time.sleep(self.env.CTRL_TIMESTEP)
 
 
-    def hover_and_capture_picture(self, initial_state, ticks = 350):
+    def hover_and_capture_picture(self, desired_state, ticks = 350, add_distance = True):
         mask = None
-        x_prime, y_prime, z_prime = initial_state[0:3]
+        x_prime, y_prime, z_prime = desired_state[0:3]
 
         for i in range(ticks):
             current_state = self.obs[0]
@@ -162,13 +167,15 @@ class Drone:
             action = np.zeros((1, 4))
             action[0, :], _, _ = self.ctrl.computeControlFromState(
                 control_timestep=self.env.CTRL_TIMESTEP,
-                state=current_state , 
+                state=current_state ,
+                # Requires unpacking / packing for some reason.
                 target_pos=target_pos,
             )
             p.resetDebugVisualizerCamera(
                 cameraDistance=3,
                 cameraYaw=0,
                 cameraPitch=-85.9,
+                # Requires unpacking / packing for some reason.
                 cameraTargetPosition=[x, y, z]
             )
 
@@ -182,6 +189,9 @@ class Drone:
             if (i == (ticks // 2)):
                 mask = self.capture_picture(self.obs[0])
             
+            if (i == 0 and add_distance):
+                self.total_distance += self.get_distance(current_state, desired_state)
+        
             time.sleep(self.env.CTRL_TIMESTEP)
         
         return mask
@@ -216,9 +226,6 @@ class Drone:
 
     def get_captured_cells(self, x, y, z):
         radius = z * math.tan(math.radians(self.DRONE_FOV / 2))
-
-        #want a radius of .5
-        #DRONE_FOV = 2 * math.degrees(math.atan(radius / z))
 
         max_x = min(self.GRID_SIZE - 1, math.ceil(x + radius))
         min_x = max(0, math.floor(x - radius))
@@ -287,7 +294,7 @@ class Drone:
 
         return np.array([best_next_position[0], best_next_position[1], best_next_z])
         
-    # Called to prevent thrashing
+    # Called to prevent hopeless searching / thrashing.
     def sweep(self):
 
         min_x, max_x = float('inf'), float('-inf')
@@ -307,70 +314,86 @@ class Drone:
         if ((max_y - min_y) % 2) == 0:
             max_y += 1
 
-        logging.info(f"WINDOW (mix_x, max_x, min_y, max_y): {min_x}, {max_x}, {min_y}, {max_y}")
-        
+        logging.info(f"WINDOW (mix_x, max_x, min_y, max_y): {min_x}, {max_x}, {min_y}, {max_y}")    
+
         x = min_x + 1
         y = min_y + 0.5
-
-        self.move([x, y, self.MIN_Z])
         reverse = False
 
-        # Want to scan the row / column with the maximum length
-        # i.e 3x8 grid, want to scan the 3 long rows instead of the 8 short columns
         if ((max_x - min_x) >= (max_y - min_y)):
-            # Row by row sweeping logic
-            while y <= max_y:
-                for i in range((max_x - min_x)):                    
-                    mask, _ = self.hover_and_capture_picture([x, y, self.MIN_Z], 125)
-
-                    logging.info(f"moving to {x, y, self.MIN_Z}")
-                    if self.hiker_id in mask:
-                        return True
-
-                    if not reverse:
-                            x += 1
-                    else:
-                            x -= 1
-                    if i == ((max_x - min_x - 1)):
-                        y += 2
-                        if not reverse:
-                            x -= 1
-                        else:
-                            x += 1
-                        self.move([x, y, self.MIN_Z])
-                    
-                        reverse = not reverse
+            direction = "ROW"
+            # Decrease movement speed to move to start of scan
+            self.move([x, y, self.MIN_Z])
         else:
-            # column by row sweeping logic
-            while x <= max_x:
-                for i in range((max_y - min_y)):
-                    # may be able to omit
-                    
+            direction = "COLUMN"
+            x, y = y, x
+            min_x, min_y = min_y, min_x
+            max_x, max_y = max_y, max_x
+            self.move([y, x, self.MIN_Z])
+
+        # Sweeping logic
+        while y <= max_y:
+            for i in range((max_x - min_x)):                    
+                
+                if direction == "ROW":
                     mask, _ = self.hover_and_capture_picture([x, y, self.MIN_Z], 125)
-
                     logging.info(f"moving to {x, y, self.MIN_Z}")
-                    if self.hiker_id in mask:
-                        return True
+                else:
+                    # For COLUMN. x, y are flipped but still need to go to their corresponding indexes
+                    mask, _ = self.hover_and_capture_picture([y, x, self.MIN_Z], 125)
+                    logging.info(f"moving to {y, x, self.MIN_Z}")
 
+                if self.hiker_id in mask:
+                    return True
+
+                if not reverse:
+                        x += 1
+                else:
+                        x -= 1
+                if i == ((max_x - min_x - 1)):
+                    y += 2
                     if not reverse:
-                            y += 1
+                        x -= 1
                     else:
-                            y -= 1
-                    logging.info(f"i: {i}")
-                    if i == ((max_y - min_y - 1)):
-                        x += 2
-                        if not reverse:
-                            y -= 1
-                        else:
-                            y += 1
-                        self.move([x, y, self.MIN_Z])
-                    
-                        reverse = not reverse
+                        x += 1
 
-    # def scan(self, current_position):
+                    if direction == "ROW":
+                        self.move([x, y, self.MIN_Z])
+                    else:
+                        self.move([y, x, self.MIN_Z])
+                
+                    reverse = not reverse
+
+    def scan(self, hiker_ever_seen, hiker_miss_count, current_position):
+        hiker_seen = False
+        goal_state = False
+
+        next_position = self.get_next_position(current_position)
+        self.move(next_position)
+        logging.info(f"Moving to {(next_position[0:3])}")
+
+        # Do not add distance if staying to hover at this position
+        mask, captured_cells = self.hover_and_capture_picture(next_position, 350, False)
+        
+        if self.hiker_id in mask:
+            if math.floor(current_position[2]) == 5:
+                goal_state = True
+            hiker_seen = True
+            hiker_ever_seen = True
+            hiker_miss_count = 0
+            logging.info(f"FOUND in cells {captured_cells}")
+        else:
+            hiker_seen = False
+            
+            if hiker_ever_seen:
+                hiker_miss_count += 1
+            logging.info(f"MISSING in cells {captured_cells}")
+        
+        self.update_belief_map(next_position, captured_cells, hiker_seen)
+
+        return hiker_ever_seen, hiker_miss_count, goal_state
 
     def run_simulation(self):
-        hiker_seen = False
         hiker_ever_seen = False
         hiker_miss_count = 0
         mode = "SCANNING"
@@ -385,35 +408,16 @@ class Drone:
             logging.info(f"At {(current_position[0:3])}")
 
             if mode == "SCANNING":
-                # Scan function
-                next_position = self.get_next_position(current_position)
-                self.move(next_position)
-                logging.info(f"Moving to {(next_position[0:3])}")
-
-                mask, captured_cells = self.hover_and_capture_picture(next_position)
-                
-                if self.hiker_id in mask:
-                    if math.floor(current_position[2]) == 5:
-                        break
-                    hiker_seen = True
-                    hiker_ever_seen = True
-                    hiker_miss_count = 0
-                    logging.info(f"FOUND in cells {captured_cells}")
-                else:
-                    hiker_seen = False
-                    
-                    if hiker_ever_seen:
-                        hiker_miss_count += 1
-                    logging.info(f"MISSING in cells {captured_cells}")
-                
-                self.update_belief_map(next_position, captured_cells, hiker_seen)
+                hiker_ever_seen, hiker_miss_count, goal_state = self.scan(hiker_ever_seen, hiker_miss_count, current_position)
+                if goal_state:
+                    break
             else:
                 if self.sweep():
                     break
 
             endtime = time.perf_counter()
             logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
-
+            logging.info(f"Drone total distance: {self.total_distance} units")
         # Victory hover
         self.hover_and_capture_picture(self.obs[0], 700)
 
