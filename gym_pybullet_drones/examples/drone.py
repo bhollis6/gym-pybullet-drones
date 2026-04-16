@@ -2,7 +2,6 @@ import numpy as np
 import time
 import math
 import random
-import numpy as np
 import pybullet as p
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
@@ -12,13 +11,12 @@ logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         filename='drone.log',
-        filemode='w'
+        filemode='a'
     )
 
 class Drone:
     TOTAL_TREES = 800
     # 5, 6 challenging
-    SEED = 0
     DRONE_DISTANCE_PENALTY = 0.0001
     DRONE_SPAWN_POINT = np.array([[0, 0, 15]])
     SLOWING_FACTOR = 50
@@ -29,8 +27,10 @@ class Drone:
     K_AGGRESSION = 80
     HIKER_MISS_LIMIT = 4
 
-    def __init__(self):
-        random.seed(self.SEED)
+    def __init__(self, seed):
+        self.seed = seed
+        random.seed(seed)
+
         self.env = CtrlAviary(drone_model=DroneModel.CF2X, 
                     num_drones=1, 
                     physics=Physics.PYB,
@@ -109,12 +109,16 @@ class Drone:
         x_prime, y_prime, z_prime = desired_state[0:3]
         return math.sqrt(((x_prime) - x)**2 + ((y_prime) - y)**2 + ((z_prime) - z)**2)
 
-    def move(self, desired_stated):
+    def move(self, desired_state):
         initial_state = self.obs[0]
         x, y, z = initial_state[0:3]
-        x_prime, y_prime, z_prime = desired_stated[0:3]
+        x_prime, y_prime, z_prime = desired_state[0:3]
 
-        distance = self.get_distance(initial_state, desired_stated)
+        # Check for crashes while scanning seeds
+        if math.floor(initial_state[2]) == 0:
+            logging.info(f"{self.seed}: CRASHED")
+
+        distance = self.get_distance(initial_state, desired_state)
         
         self.total_distance += distance
 
@@ -161,7 +165,7 @@ class Drone:
         for i in range(ticks):
             current_state = self.obs[0]
             x, y, z = current_state[0:3]
-
+            
             target_pos = np.array([x_prime, y_prime, z_prime])
 
             action = np.zeros((1, 4))
@@ -249,7 +253,6 @@ class Drone:
                     if hiker_seen:
                         if in_bounds(i, j):
                             self.belief_map[i][j] = prior_probability * (1 - self.calculate_false_negative_rate(x, y, z, i, j))
-                            self.hiker_cells.add((i, j))
                         # Hiker seen, not in bounds
                         else:
                             self.hiker_cells.remove((i, j))
@@ -316,16 +319,19 @@ class Drone:
 
         logging.info(f"WINDOW (mix_x, max_x, min_y, max_y): {min_x}, {max_x}, {min_y}, {max_y}")    
 
-        x = min_x + 1
-        y = min_y + 0.5
+        
         reverse = False
 
         if ((max_x - min_x) >= (max_y - min_y)):
             direction = "ROW"
+            x = min_x + 1
+            y = min_y + 0.5
             # Decrease movement speed to move to start of scan
             self.move([x, y, self.MIN_Z])
         else:
             direction = "COLUMN"
+            x = min_x + 0.5
+            y = min_y + 1
             x, y = y, x
             min_x, min_y = min_y, min_x
             max_x, max_y = max_y, max_x
@@ -368,15 +374,19 @@ class Drone:
         hiker_seen = False
         goal_state = False
 
+        if math.floor(current_position[2]) == 0:
+            logging.info(f"{self.seed}: CRASHED")
+            return hiker_ever_seen, hiker_miss_count, True
+
         next_position = self.get_next_position(current_position)
         self.move(next_position)
         logging.info(f"Moving to {(next_position[0:3])}")
 
         # Do not add distance if staying to hover at this position
-        mask, captured_cells = self.hover_and_capture_picture(next_position, 350, False)
+        mask, captured_cells = self.hover_and_capture_picture(next_position, 400, False)
         
         if self.hiker_id in mask:
-            if math.floor(current_position[2]) == 5:
+            if round(current_position[2]) == 5:
                 goal_state = True
             hiker_seen = True
             hiker_ever_seen = True
@@ -414,11 +424,11 @@ class Drone:
             else:
                 if self.sweep():
                     break
-
-        endtime = time.perf_counter()
-        logging.info(f"Hiker Found in {endtime - start:.6f} seconds")
-        logging.info(f"Drone total distance: {self.total_distance} units")
         
+        total_time = time.perf_counter() - start
+        logging.info(f"Seed: {self.seed}. Hiker Found in {total_time:.6f} seconds")
+        logging.info(f"Seed: {self.seed}. Drone total distance: {self.total_distance} units")
+        logging.info(f"Full: {self.seed, total_time, self.total_distance}")
         # Victory hover
         self.hover_and_capture_picture(self.obs[0], 700)
 
